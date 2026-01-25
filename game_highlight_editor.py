@@ -291,13 +291,13 @@ async def static_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
         # Формирование статистики
         stats_text = (
-            f"📊 *СТАТИСТИКА БОТА*\n\n"
-            f"👥 Всего пользователей: *{total_users}*\n"
-            f"🟢 Активных (7 дней): *{active_users}*\n"
-            f"📥 Получено сообщений: *{total_messages_received}*\n"
-            f"📤 Отправлено сообщений: *{total_messages_sent}*\n"
-            f"🔗 Активных ссылок: *{len(active_links)}*\n"
-            f"💬 Активных сессий: *{len(active_sessions)}*"
+            f"📊 \\*СТАТИСТИКА БОТА\\*\n\n"
+            f"👥 Всего пользователей: \\*{total_users}\\*\n"
+            f"🟢 Активных \\(7 дней\\): \\*{active_users}\\*\n"
+            f"📥 Получено сообщений: \\*{total_messages_received}\\*\n"
+            f"📤 Отправлено сообщений: \\*{total_messages_sent}\\*\n"
+            f"🔗 Активных ссылок: \\*{len(active_links)}\\*\n"
+            f"💬 Активных сессий: \\*{len(active_sessions)}\\*"
         )
 
         await update.message.reply_text(
@@ -311,77 +311,81 @@ async def static_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 
 async def send_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Секретная команда для рассылки сообщений всем пользователям (только для администратора)"""
+    """РАССЫЛКА: /send в начале подписи к фото"""
     try:
+        # Проверка админа
         user = update.effective_user
-
-        # Проверка, является ли пользователь администратором
         if user.id != ADMIN_ID:
-            await update.message.reply_text("❌ У вас нет прав для выполнения этой команды.")
             return
 
-        # Проверка наличия текста сообщения
-        if not context.args:
+        # Если сообщение с фото
+        if update.message.photo:
+            photo = update.message.photo[-1]
+            caption = update.message.caption or ""
+
+            # Проверяем, есть ли в подписи /send
+            if '/send' in caption:
+                # Берем текст после /send
+                parts = caption.split('/send', 1)
+                if len(parts) > 1:
+                    text = parts[1].strip()
+                else:
+                    text = ""
+
+                # Рассылаем
+                success = 0
+                fail = 0
+
+                await update.message.reply_text(f"📤 Рассылаю {len(user_db)} пользователям...")
+
+                for user_id in user_db:
+                    try:
+                        if text:
+                            await context.bot.send_photo(user_id, photo.file_id, caption=text)
+                        else:
+                            await context.bot.send_photo(user_id, photo.file_id)
+                        success += 1
+                        await asyncio.sleep(0.05)
+                    except Exception as e:
+                        logger.error(f"Error to {user_id}: {e}")
+                        fail += 1
+
+                await update.message.reply_text(f"✅ Готово! ✓{success} ✗{fail}")
+                return
+
+        # Если просто текст после /send
+        if context.args:
+            text = ' '.join(context.args)
+
+            success = 0
+            fail = 0
+
+            await update.message.reply_text(f"📤 Рассылаю текст {len(user_db)} пользователям...")
+
+            for user_id in user_db:
+                try:
+                    await context.bot.send_message(user_id, text)
+                    success += 1
+                    await asyncio.sleep(0.05)
+                except Exception as e:
+                    logger.error(f"Error to {user_id}: {e}")
+                    fail += 1
+
+            await update.message.reply_text(f"✅ Готово! ✓{success} ✗{fail}")
+            return
+
+        # Если просто /send
+        if not context.args and not update.message.photo:
             await update.message.reply_text(
-                "📝 Использование команды:\n"
-                "`/send Ваше сообщение для рассылки`\n\n"
-                "Пример: `/send Привет! Это тестовая рассылка.`",
-                parse_mode=ParseMode.MARKDOWN_V2
+                "📢 Отправь фото с подписью:\n"
+                "`/send Твой текст`\n\n"
+                "Или просто текст:\n"
+                "`/send Привет всем!`",
+                parse_mode="Markdown"
             )
-            return
-
-        # Формирование сообщения
-        message_text = ' '.join(context.args)
-        escaped_message = BotSystem.escape_markdown_v2(message_text)
-
-        broadcast_text = (
-            f"📢 *ОБЪЯВЛЕНИЕ ОТ АДМИНИСТРАЦИИ*\n\n"
-            f"{escaped_message}"
-        )
-
-        # Отправка подтверждения администратору
-        await update.message.reply_text(
-            f"🔄 Начинаю рассылку сообщения для *{len(user_db)}* пользователей...",
-            parse_mode=ParseMode.MARKDOWN_V2
-        )
-
-        # Рассылка сообщения всем пользователям
-        success_count = 0
-        fail_count = 0
-
-        for user_id, user_data in user_db.items():
-            try:
-                await send_safe_message(
-                    user_id,
-                    broadcast_text,
-                    context,
-                    parse_mode=ParseMode.MARKDOWN_V2
-                )
-                success_count += 1
-
-                # Небольшая задержка, чтобы не превысить лимиты Telegram
-                await asyncio.sleep(0.05)
-
-            except Exception as e:
-                logger.error(f"Error sending broadcast to {user_id}: {e}")
-                fail_count += 1
-
-        # Отчет о рассылке
-        report_text = (
-            f"✅ *РАССЫЛКА ЗАВЕРШЕНА*\n\n"
-            f"📤 Успешно отправлено: *{success_count}*\n"
-            f"❌ Не удалось отправить: *{fail_count}*\n"
-            f"👥 Всего пользователей: *{len(user_db)}*"
-        )
-
-        await update.message.reply_text(
-            report_text,
-            parse_mode=ParseMode.MARKDOWN_V2
-        )
 
     except Exception as e:
         logger.error(f"Error in send_command: {e}")
-        await update.message.reply_text("❌ Ошибка при рассылке сообщений.")
 
 
 async def show_welcome_message(update: Update, context: ContextTypes.DEFAULT_TYPE, user=None,
