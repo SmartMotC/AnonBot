@@ -265,6 +265,125 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         logger.error(f"Error in start_command: {e}")
 
 
+async def static_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Секретная команда для получения статистики пользователей (только для администратора)"""
+    try:
+        user = update.effective_user
+
+        # Проверка, является ли пользователь администратором
+        if user.id != ADMIN_ID:
+            await update.message.reply_text("❌ У вас нет прав для выполнения этой команды.")
+            return
+
+        # Подсчет пользователей
+        total_users = len(user_db)
+
+        # Подсчет активных пользователей (последние 7 дней)
+        week_ago = datetime.now() - timedelta(days=7)
+        active_users = sum(1 for user_data in user_db.values()
+                           if user_data['last_active'] > week_ago)
+
+        # Подсчет сообщений
+        total_messages_received = sum(user_data.get('messages_received', 0)
+                                      for user_data in user_db.values())
+        total_messages_sent = sum(user_data.get('messages_sent', 0)
+                                  for user_data in user_db.values())
+
+        # Формирование статистики
+        stats_text = (
+            f"📊 *СТАТИСТИКА БОТА*\n\n"
+            f"👥 Всего пользователей: *{total_users}*\n"
+            f"🟢 Активных (7 дней): *{active_users}*\n"
+            f"📥 Получено сообщений: *{total_messages_received}*\n"
+            f"📤 Отправлено сообщений: *{total_messages_sent}*\n"
+            f"🔗 Активных ссылок: *{len(active_links)}*\n"
+            f"💬 Активных сессий: *{len(active_sessions)}*"
+        )
+
+        await update.message.reply_text(
+            stats_text,
+            parse_mode=ParseMode.MARKDOWN_V2
+        )
+
+    except Exception as e:
+        logger.error(f"Error in static_command: {e}")
+        await update.message.reply_text("❌ Ошибка при получении статистики.")
+
+
+async def send_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Секретная команда для рассылки сообщений всем пользователям (только для администратора)"""
+    try:
+        user = update.effective_user
+
+        # Проверка, является ли пользователь администратором
+        if user.id != ADMIN_ID:
+            await update.message.reply_text("❌ У вас нет прав для выполнения этой команды.")
+            return
+
+        # Проверка наличия текста сообщения
+        if not context.args:
+            await update.message.reply_text(
+                "📝 Использование команды:\n"
+                "`/send Ваше сообщение для рассылки`\n\n"
+                "Пример: `/send Привет! Это тестовая рассылка.`",
+                parse_mode=ParseMode.MARKDOWN_V2
+            )
+            return
+
+        # Формирование сообщения
+        message_text = ' '.join(context.args)
+        escaped_message = BotSystem.escape_markdown_v2(message_text)
+
+        broadcast_text = (
+            f"📢 *ОБЪЯВЛЕНИЕ ОТ АДМИНИСТРАЦИИ*\n\n"
+            f"{escaped_message}"
+        )
+
+        # Отправка подтверждения администратору
+        await update.message.reply_text(
+            f"🔄 Начинаю рассылку сообщения для *{len(user_db)}* пользователей...",
+            parse_mode=ParseMode.MARKDOWN_V2
+        )
+
+        # Рассылка сообщения всем пользователям
+        success_count = 0
+        fail_count = 0
+
+        for user_id, user_data in user_db.items():
+            try:
+                await send_safe_message(
+                    user_id,
+                    broadcast_text,
+                    context,
+                    parse_mode=ParseMode.MARKDOWN_V2
+                )
+                success_count += 1
+
+                # Небольшая задержка, чтобы не превысить лимиты Telegram
+                await asyncio.sleep(0.05)
+
+            except Exception as e:
+                logger.error(f"Error sending broadcast to {user_id}: {e}")
+                fail_count += 1
+
+        # Отчет о рассылке
+        report_text = (
+            f"✅ *РАССЫЛКА ЗАВЕРШЕНА*\n\n"
+            f"📤 Успешно отправлено: *{success_count}*\n"
+            f"❌ Не удалось отправить: *{fail_count}*\n"
+            f"👥 Всего пользователей: *{len(user_db)}*"
+        )
+
+        await update.message.reply_text(
+            report_text,
+            parse_mode=ParseMode.MARKDOWN_V2
+        )
+
+    except Exception as e:
+        logger.error(f"Error in send_command: {e}")
+        await update.message.reply_text("❌ Ошибка при рассылке сообщений.")
+
+
 async def show_welcome_message(update: Update, context: ContextTypes.DEFAULT_TYPE, user=None,
                                user_data: dict = None) -> None:
     """Показывает приветственное сообщение"""
@@ -1185,7 +1304,11 @@ def main():
     """Запуск бота"""
     application = Application.builder().token(BOT_TOKEN).build()
 
+    # Основные команды
     application.add_handler(CommandHandler("start", start_command))
+    application.add_handler(CommandHandler("static", static_command))
+    application.add_handler(CommandHandler("send", send_command))
+
     application.add_handler(CallbackQueryHandler(handle_callback_query))
 
     application.add_handler(MessageHandler(
@@ -1209,6 +1332,8 @@ def main():
     print("🤫 АНОНИМНЫЙ ЧАТ-БОТ".center(60))
     print("═" * 60)
     print("🚀 Бот запускается...")
+    print("═" * 60)
+    print(f"👑 Администратор: {ADMIN_ID}")
     print("═" * 60)
 
     application.run_polling(allowed_updates=Update.ALL_TYPES)
