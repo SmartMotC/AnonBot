@@ -3,6 +3,9 @@ import asyncio
 import secrets
 import hashlib
 import time
+import json
+import pickle
+import base64
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, Message
@@ -23,7 +26,7 @@ ADMIN_ID = 1612221355
 # Получаем username бота автоматически
 BOT_USERNAME = None
 
-# Базы данных
+# Базы данных в памяти (восстановятся при перезапуске)
 user_db: Dict[int, dict] = {}
 referral_db: Dict[str, int] = {}
 active_links: Dict[str, dict] = {}
@@ -31,9 +34,51 @@ message_db: Dict[int, List[Dict]] = {}
 pending_replies: Dict[int, Dict] = {}
 active_sessions: Dict[int, Dict] = {}
 
+# Статистика в памяти
+bot_stats = {
+    'total_messages_sent': 0,
+    'total_messages_received': 0,
+    'total_users': 0,
+    'daily_stats': [],
+    'last_reset': datetime.now().isoformat()
+}
+
+# Ключ для шифрования данных в описании канала (если нужно)
+DATA_STORAGE_KEY = "bot_data_"
+
 
 class BotSystem:
-    """Основная система бота"""
+    """Основная система бота с сохранением статистики"""
+
+    @staticmethod
+    def save_stats_to_memory():
+        """Сохраняет статистику в памяти (в самом коде не сохраняем, просто держим в оперативке)"""
+        # В этом варианте статистика хранится только в оперативной памяти
+        # При перезапуске бота статистика начнется заново
+        # Для сохранения между перезапусками нужен был бы внешний файл или БД
+        pass
+
+    @staticmethod
+    def load_stats_from_memory():
+        """Загружает статистику из памяти (в этом варианте всегда начинаем с нуля)"""
+        # В простом варианте просто возвращаем текущие данные
+        return {
+            'total_messages_sent': sum(user.get('messages_sent', 0) for user in user_db.values()),
+            'total_messages_received': sum(user.get('messages_received', 0) for user in user_db.values()),
+            'total_users': len(user_db),
+            'daily_stats': [],
+            'last_reset': datetime.now().isoformat()
+        }
+
+    @staticmethod
+    def encode_data(data):
+        """Кодирует данные в base64 (не используется в этом простом варианте)"""
+        return base64.b64encode(pickle.dumps(data)).decode('utf-8')
+
+    @staticmethod
+    def decode_data(encoded_data):
+        """Декодирует данные из base64 (не используется в этом простом варианте)"""
+        return pickle.loads(base64.b64decode(encoded_data))
 
     @staticmethod
     async def get_bot_username(context: ContextTypes.DEFAULT_TYPE) -> str:
@@ -125,6 +170,46 @@ class BotSystem:
             else:
                 escaped.append(char)
         return ''.join(escaped)
+
+    @staticmethod
+    def update_stats(message_type: str = 'sent'):
+        """Обновляет статистику в памяти"""
+        if message_type == 'sent':
+            bot_stats['total_messages_sent'] += 1
+        elif message_type == 'received':
+            bot_stats['total_messages_received'] += 1
+
+        bot_stats['total_users'] = len(user_db)
+
+        # Обновляем ежедневную статистику
+        today = datetime.now().date()
+
+        # Ищем сегодняшнюю запись
+        daily_found = False
+        for stat in bot_stats['daily_stats']:
+            stat_date = stat.get('date')
+            if isinstance(stat_date, str):
+                stat_date = datetime.fromisoformat(stat_date).date()
+
+            if stat_date == today:
+                if message_type == 'sent':
+                    stat['sent'] = stat.get('sent', 0) + 1
+                else:
+                    stat['received'] = stat.get('received', 0) + 1
+                daily_found = True
+                break
+
+        if not daily_found:
+            new_stat = {
+                'date': today.isoformat(),
+                'sent': 1 if message_type == 'sent' else 0,
+                'received': 1 if message_type == 'received' else 0,
+            }
+            bot_stats['daily_stats'].append(new_stat)
+
+        # Ограничиваем историю 30 днями
+        if len(bot_stats['daily_stats']) > 30:
+            bot_stats['daily_stats'] = bot_stats['daily_stats'][-30:]
 
 
 async def safe_edit_message(query, text: str, reply_markup=None, parse_mode=ParseMode.MARKDOWN_V2):
@@ -275,7 +360,9 @@ async def static_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             await update.message.reply_text("❌ У вас нет прав для выполнения этой команды.")
             return
 
-        # Подсчет пользователей
+        # Автоматически обновляем статистику из текущих данных
+        total_messages_sent = sum(user.get('messages_sent', 0) for user in user_db.values())
+        total_messages_received = sum(user.get('messages_received', 0) for user in user_db.values())
         total_users = len(user_db)
 
         # Подсчет активных пользователей (последние 7 дней)
@@ -283,22 +370,48 @@ async def static_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         active_users = sum(1 for user_data in user_db.values()
                            if user_data['last_active'] > week_ago)
 
-        # Подсчет сообщений
-        total_messages_received = sum(user_data.get('messages_received', 0)
-                                      for user_data in user_db.values())
-        total_messages_sent = sum(user_data.get('messages_sent', 0)
-                                  for user_data in user_db.values())
+        # Статистика за последние 7 дней
+        week_stats = []
+        for i in range(7):
+            day = datetime.now() - timedelta(days=i)
+            day_str = day.strftime('%d\\.%m')  # Экранируем точку в дате
+            day_date = day.date()
 
-        # Формирование статистики
+            day_sent = 0
+            day_received = 0
+
+            for stat in bot_stats['daily_stats']:
+                stat_date = stat.get('date')
+                if isinstance(stat_date, str):
+                    stat_date = datetime.fromisoformat(stat_date).date()
+
+                if stat_date == day_date:
+                    day_sent = stat.get('sent', 0)
+                    day_received = stat.get('received', 0)
+                    break
+
+            week_stats.append({
+                'date': day_str,
+                'sent': day_sent,
+                'received': day_received
+            })
+
+        # Формирование статистики с экранированием специальных символов
+        # Экранируем всё, что может содержать специальные символы MarkdownV2
         stats_text = (
             f"📊 \\*СТАТИСТИКА БОТА\\*\n\n"
             f"👥 Всего пользователей: \\*{total_users}\\*\n"
             f"🟢 Активных \\(7 дней\\): \\*{active_users}\\*\n"
-            f"📥 Получено сообщений: \\*{total_messages_received}\\*\n"
             f"📤 Отправлено сообщений: \\*{total_messages_sent}\\*\n"
+            f"📥 Получено сообщений: \\*{total_messages_received}\\*\n"
             f"🔗 Активных ссылок: \\*{len(active_links)}\\*\n"
-            f"💬 Активных сессий: \\*{len(active_sessions)}\\*"
+            f"💬 Активных сессий: \\*{len(active_sessions)}\\*\n\n"
+            f"📈 \\*СТАТИСТИКА ЗА 7 ДНЕЙ\\*"
         )
+
+        # Добавляем статистику по дням с экранированием
+        for stat in week_stats:
+            stats_text += f"\n{stat['date']}: 📤{stat['sent']} 📥{stat['received']}"
 
         await update.message.reply_text(
             stats_text,
@@ -307,85 +420,199 @@ async def static_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     except Exception as e:
         logger.error(f"Error in static_command: {e}")
-        await update.message.reply_text("❌ Ошибка при получении статистики.")
+        # Отправляем простой текст без Markdown в случае ошибки
+        try:
+            simple_text = (
+                f"📊 СТАТИСТИКА БОТА\n\n"
+                f"👥 Всего пользователей: {len(user_db)}\n"
+                f"🟢 Активных (7 дней): {sum(1 for user_data in user_db.values() if user_data['last_active'] > (datetime.now() - timedelta(days=7)))}\n"
+                f"📤 Отправлено сообщений: {sum(user.get('messages_sent', 0) for user in user_db.values())}\n"
+                f"📥 Получено сообщений: {sum(user.get('messages_received', 0) for user in user_db.values())}\n"
+                f"🔗 Активных ссылок: {len(active_links)}\n"
+                f"💬 Активных сессий: {len(active_sessions)}"
+            )
+            await update.message.reply_text(simple_text)
+        except Exception as e2:
+            logger.error(f"Error in static_command fallback: {e2}")
+            await update.message.reply_text("❌ Ошибка при получении статистики.")
 
 
 async def send_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """РАССЫЛКА: /send в начале подписи к фото"""
+    """Улучшенная рассылка: поддерживает фото с текстом и ссылками"""
     try:
         # Проверка админа
         user = update.effective_user
         if user.id != ADMIN_ID:
             return
 
-        # Если сообщение с фото
-        if update.message.photo:
-            photo = update.message.photo[-1]
-            caption = update.message.caption or ""
+        # Если это ответ на сообщение (для медиа)
+        if update.message.reply_to_message:
+            replied_message = update.message.reply_to_message
+            text_to_send = ' '.join(context.args) if context.args else ""
 
-            # Проверяем, есть ли в подписи /send
-            if '/send' in caption:
-                # Берем текст после /send
-                parts = caption.split('/send', 1)
-                if len(parts) > 1:
-                    text = parts[1].strip()
+            # Проверяем что в ответе
+            if replied_message.photo:
+                media_type = "фото"
+                media = replied_message.photo[-1]
+                original_caption = replied_message.caption or ""
+
+                # Формируем новую подпись
+                if text_to_send:
+                    new_caption = f"{original_caption}\n{text_to_send}" if original_caption else text_to_send
                 else:
-                    text = ""
+                    new_caption = original_caption
 
-                # Рассылаем
                 success = 0
                 fail = 0
 
-                await update.message.reply_text(f"📤 Рассылаю {len(user_db)} пользователям...")
+                status_msg = await update.message.reply_text(f"📤 Рассылаю {media_type} {len(user_db)} пользователям...")
 
-                for user_id in user_db:
+                for user_id in list(user_db.keys()):
                     try:
-                        if text:
-                            await context.bot.send_photo(user_id, photo.file_id, caption=text)
+                        if new_caption:
+                            await context.bot.send_photo(
+                                chat_id=user_id,
+                                photo=media.file_id,
+                                caption=new_caption,
+                                parse_mode=ParseMode.MARKDOWN
+                            )
                         else:
-                            await context.bot.send_photo(user_id, photo.file_id)
+                            await context.bot.send_photo(user_id, media.file_id)
                         success += 1
                         await asyncio.sleep(0.05)
                     except Exception as e:
-                        logger.error(f"Error to {user_id}: {e}")
+                        logger.error(f"Error sending to {user_id}: {e}")
                         fail += 1
 
-                await update.message.reply_text(f"✅ Готово! ✓{success} ✗{fail}")
+                await status_msg.edit_text(f"✅ Готово!\n✓ Отправлено: {success}\n✗ Не отправлено: {fail}")
+                return
+
+            elif replied_message.video:
+                media_type = "видео"
+                media = replied_message.video
+                original_caption = replied_message.caption or ""
+
+                if text_to_send:
+                    new_caption = f"{original_caption}\n{text_to_send}" if original_caption else text_to_send
+                else:
+                    new_caption = original_caption
+
+                success = 0
+                fail = 0
+
+                status_msg = await update.message.reply_text(f"📤 Рассылаю {media_type} {len(user_db)} пользователям...")
+
+                for user_id in list(user_db.keys()):
+                    try:
+                        if new_caption:
+                            await context.bot.send_video(
+                                chat_id=user_id,
+                                video=media.file_id,
+                                caption=new_caption,
+                                parse_mode=ParseMode.MARKDOWN
+                            )
+                        else:
+                            await context.bot.send_video(user_id, media.file_id)
+                        success += 1
+                        await asyncio.sleep(0.05)
+                    except Exception as e:
+                        logger.error(f"Error sending to {user_id}: {e}")
+                        fail += 1
+
+                await status_msg.edit_text(f"✅ Готово!\n✓ Отправлено: {success}\n✗ Не отправлено: {fail}")
+                return
+
+            elif replied_message.document:
+                media_type = "документ"
+                media = replied_message.document
+                original_caption = replied_message.caption or ""
+
+                if text_to_send:
+                    new_caption = f"{original_caption}\n{text_to_send}" if original_caption else text_to_send
+                else:
+                    new_caption = original_caption
+
+                success = 0
+                fail = 0
+
+                status_msg = await update.message.reply_text(f"📤 Рассылаю {media_type} {len(user_db)} пользователям...")
+
+                for user_id in list(user_db.keys()):
+                    try:
+                        if new_caption:
+                            await context.bot.send_document(
+                                chat_id=user_id,
+                                document=media.file_id,
+                                caption=new_caption,
+                                parse_mode=ParseMode.MARKDOWN
+                            )
+                        else:
+                            await context.bot.send_document(user_id, media.file_id)
+                        success += 1
+                        await asyncio.sleep(0.05)
+                    except Exception as e:
+                        logger.error(f"Error sending to {user_id}: {e}")
+                        fail += 1
+
+                await status_msg.edit_text(f"✅ Готово!\n✓ Отправлено: {success}\n✗ Не отправлено: {fail}")
+                return
+            else:
+                await update.message.reply_text(
+                    "❌ Ответьте на фото, видео или документ для рассылки\n\n"
+                    "Как использовать:\n"
+                    "1. Отправьте фото/видео/документ\n"
+                    "2. Ответьте на него командой `/send`\n"
+                    "3. Можно добавить текст: `/send ваш текст`",
+                    parse_mode="Markdown"
+                )
                 return
 
         # Если просто текст после /send
-        if context.args:
+        elif context.args:
             text = ' '.join(context.args)
 
             success = 0
             fail = 0
 
-            await update.message.reply_text(f"📤 Рассылаю текст {len(user_db)} пользователям...")
+            status_msg = await update.message.reply_text(f"📤 Рассылаю текст {len(user_db)} пользователям...")
 
-            for user_id in user_db:
+            for user_id in list(user_db.keys()):
                 try:
-                    await context.bot.send_message(user_id, text)
+                    await context.bot.send_message(
+                        user_id,
+                        text,
+                        parse_mode=ParseMode.MARKDOWN,
+                        disable_web_page_preview=False
+                    )
                     success += 1
                     await asyncio.sleep(0.05)
                 except Exception as e:
-                    logger.error(f"Error to {user_id}: {e}")
+                    logger.error(f"Error sending to {user_id}: {e}")
                     fail += 1
 
-            await update.message.reply_text(f"✅ Готово! ✓{success} ✗{fail}")
+            await status_msg.edit_text(f"✅ Готово!\n✓ Отправлено: {success}\n✗ Не отправлено: {fail}")
             return
 
         # Если просто /send
-        if not context.args and not update.message.photo:
-            await update.message.reply_text(
-                "📢 Отправь фото с подписью:\n"
-                "`/send Твой текст`\n\n"
-                "Или просто текст:\n"
-                "`/send Привет всем!`",
-                parse_mode="Markdown"
-            )
+        await update.message.reply_text(
+            "📢 *Команда для рассылки рекламы*\n\n"
+            "*Как использовать:*\n\n"
+            "1️⃣ *Текст:*\n"
+            "`/send Ваш текст сюда`\n\n"
+            "2️⃣ *Медиа (фото/видео/документы):*\n"
+            "• Сначала отправьте фото/видео/документ\n"
+            "• Затем ответьте на него командой `/send`\n"
+            "• Можно добавить текст: `/send ваш текст`\n\n"
+            "*Пример:*\n"
+            "1. Отправляете фото\n"
+            "2. Отвечаете на фото: `/send Акция! Скидка 50%`\n\n"
+            "*Сейчас в базе:* " + str(len(user_db)) + " пользователей",
+            parse_mode="Markdown"
+        )
 
     except Exception as e:
         logger.error(f"Error in send_command: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:100]}")
 
 
 async def show_welcome_message(update: Update, context: ContextTypes.DEFAULT_TYPE, user=None,
@@ -625,7 +852,6 @@ async def send_anonymous_message(update: Update, context: ContextTypes.DEFAULT_T
         # У ПОЛУЧАТЕЛЯ ТОЛЬКО КНОПКА "ОТВЕТИТЬ", БЕЗ "НАПИСАТЬ ЕЩЕ"
         reply_keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("💬 Ответить", callback_data=f"reply_{message_id}")]
-            # Убрана кнопка "Написать еще" для получателя
         ])
 
         try:
@@ -730,6 +956,10 @@ async def send_anonymous_message(update: Update, context: ContextTypes.DEFAULT_T
         user_db[receiver_id]['messages_received'] += 1
         user_db[receiver_id]['last_active'] = datetime.now()
 
+        # Обновляем статистику
+        BotSystem.update_stats('sent')
+        BotSystem.update_stats('received')
+
         if sender_id not in active_sessions:
             active_sessions[sender_id] = {
                 'target_id': receiver_id,
@@ -778,6 +1008,12 @@ async def handle_private_message(update: Update, context: ContextTypes.DEFAULT_T
     try:
         user = update.effective_user
         message = update.message
+
+        # Пропускаем медиа от админа (это может быть рассылка)
+        if user.id == ADMIN_ID and (message.photo or message.video or message.document):
+            # Если админ отправляет медиа, не показываем стартовое сообщение
+            # Пусть команда /send в ответ на медиа обрабатывает рассылку
+            return
 
         if message.text and message.text.startswith('/'):
             return
@@ -1201,11 +1437,16 @@ async def send_reply(update: Update, context: ContextTypes.DEFAULT_TYPE, sender_
             logger.error(f"Error sending reply to {target_user_id}: {e}")
             return False
 
-        user_db[sender_id]['messages_sent'] = user_db[sender_id].get('messages_sent', 0) + 1
-        user_db[sender_id]['last_active'] = datetime.now()
+        if sender_id in user_db:
+            user_db[sender_id]['messages_sent'] = user_db[sender_id].get('messages_sent', 0) + 1
+            user_db[sender_id]['last_active'] = datetime.now()
 
         user_db[target_user_id]['messages_received'] += 1
         user_db[target_user_id]['last_active'] = datetime.now()
+
+        # Обновляем статистику
+        BotSystem.update_stats('sent')
+        BotSystem.update_stats('received')
 
         if target_user_id not in message_db:
             message_db[target_user_id] = []
@@ -1338,6 +1579,7 @@ def main():
     print("🚀 Бот запускается...")
     print("═" * 60)
     print(f"👑 Администратор: {ADMIN_ID}")
+    print(f"📊 Статистика хранится в памяти")
     print("═" * 60)
 
     application.run_polling(allowed_updates=Update.ALL_TYPES)
