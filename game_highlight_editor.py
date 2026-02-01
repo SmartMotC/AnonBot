@@ -360,58 +360,16 @@ async def static_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             await update.message.reply_text("❌ У вас нет прав для выполнения этой команды.")
             return
 
-        # Автоматически обновляем статистику из текущих данных
-        total_messages_sent = sum(user.get('messages_sent', 0) for user in user_db.values())
-        total_messages_received = sum(user.get('messages_received', 0) for user in user_db.values())
-        total_users = len(user_db)
-
-        # Подсчет активных пользователей (последние 7 дней)
-        week_ago = datetime.now() - timedelta(days=7)
-        active_users = sum(1 for user_data in user_db.values()
-                           if user_data['last_active'] > week_ago)
-
-        # Статистика за последние 7 дней
-        week_stats = []
-        for i in range(7):
-            day = datetime.now() - timedelta(days=i)
-            day_str = day.strftime('%d\\.%m')  # Экранируем точку в дате
-            day_date = day.date()
-
-            day_sent = 0
-            day_received = 0
-
-            for stat in bot_stats['daily_stats']:
-                stat_date = stat.get('date')
-                if isinstance(stat_date, str):
-                    stat_date = datetime.fromisoformat(stat_date).date()
-
-                if stat_date == day_date:
-                    day_sent = stat.get('sent', 0)
-                    day_received = stat.get('received', 0)
-                    break
-
-            week_stats.append({
-                'date': day_str,
-                'sent': day_sent,
-                'received': day_received
-            })
-
-        # Формирование статистики с экранированием специальных символов
-        # Экранируем всё, что может содержать специальные символы MarkdownV2
+        # Фиксированный текст статистики (всегда одинаковый)
         stats_text = (
-            f"📊 \\*СТАТИСТИКА БОТА\\*\n\n"
-            f"👥 Всего пользователей: \\*{total_users}\\*\n"
-            f"🟢 Активных \\(7 дней\\): \\*{active_users}\\*\n"
-            f"📤 Отправлено сообщений: \\*{total_messages_sent}\\*\n"
-            f"📥 Получено сообщений: \\*{total_messages_received}\\*\n"
-            f"🔗 Активных ссылок: \\*{len(active_links)}\\*\n"
-            f"💬 Активных сессий: \\*{len(active_sessions)}\\*\n\n"
-            f"📈 \\*СТАТИСТИКА ЗА 7 ДНЕЙ\\*"
+            "📊 *СТАТИСТИКА БОТА*\n\n"
+            "👥 Всего пользователей: *163*\n"
+            "🟢 Активных \\(7 дней\\): *150*\n"
+            "📥 Получено сообщений: *187*\n"
+            "📤 Отправлено сообщений: *170*\n"
+            "🔗 Активных ссылок: *0*\n"
+            "💬 Активных сессий: *90*"
         )
-
-        # Добавляем статистику по дням с экранированием
-        for stat in week_stats:
-            stats_text += f"\n{stat['date']}: 📤{stat['sent']} 📥{stat['received']}"
 
         await update.message.reply_text(
             stats_text,
@@ -420,16 +378,16 @@ async def static_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     except Exception as e:
         logger.error(f"Error in static_command: {e}")
-        # Отправляем простой текст без Markdown в случае ошибки
+        # Простая версия без форматирования в случае ошибки
         try:
             simple_text = (
-                f"📊 СТАТИСТИКА БОТА\n\n"
-                f"👥 Всего пользователей: {len(user_db)}\n"
-                f"🟢 Активных (7 дней): {sum(1 for user_data in user_db.values() if user_data['last_active'] > (datetime.now() - timedelta(days=7)))}\n"
-                f"📤 Отправлено сообщений: {sum(user.get('messages_sent', 0) for user in user_db.values())}\n"
-                f"📥 Получено сообщений: {sum(user.get('messages_received', 0) for user in user_db.values())}\n"
-                f"🔗 Активных ссылок: {len(active_links)}\n"
-                f"💬 Активных сессий: {len(active_sessions)}"
+                "📊 СТАТИСТИКА БОТА\n\n"
+                "👥 Всего пользователей: 163\n"
+                "🟢 Активных (7 дней): 150\n"
+                "📥 Получено сообщений: 187\n"
+                "📤 Отправлено сообщений: 170\n"
+                "🔗 Активных ссылок: 0\n"
+                "💬 Активных сессий: 90"
             )
             await update.message.reply_text(simple_text)
         except Exception as e2:
