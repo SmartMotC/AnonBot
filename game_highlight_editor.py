@@ -20,7 +20,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # КОНФИГУРАЦИЯ
-BOT_TOKEN = "8454988958:AAHQmlOMtfTNOLsbPVNSLqyTAAYjJwEiltg"
+BOT_TOKEN = "8454988958:AAHQmlOMtfTNOLsbPVNSLqyTAAYjJwgYhtr"
 ADMIN_ID = 1612221355
 
 # Получаем username бота автоматически
